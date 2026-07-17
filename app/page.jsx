@@ -1,11 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import { autoCrop } from "./lib/autocrop";
 
 export default function Home() {
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState(null); // { imageDataUrl, detected, numPeople }
+  const [result, setResult] = useState(null); // { url, detected, numPeople, width, height }
   const [error, setError] = useState(null);
 
   async function handleCrop() {
@@ -13,36 +14,29 @@ export default function Home() {
     setLoading(true);
     setError(null);
     setResult(null);
-
     try {
-      const form = new FormData();
-      form.append("image", file);
-
-      const res = await fetch("/api/crop", { method: "POST", body: form });
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || "Crop failed");
-      }
-      setResult(data);
+      const r = await autoCrop(file);
+      const url = URL.createObjectURL(r.blob);
+      setResult({
+        url,
+        detected: r.detected,
+        numPeople: r.numPeople,
+        width: r.width,
+        height: r.height,
+      });
     } catch (e) {
-      setError(e.message || String(e));
+      setError(e?.message || String(e));
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <main
-      style={{
-        maxWidth: 720,
-        margin: "0 auto",
-        padding: "40px 20px",
-      }}
-    >
+    <main style={{ maxWidth: 720, margin: "0 auto", padding: "40px 20px" }}>
       <h1 style={{ marginBottom: 4 }}>CropDog</h1>
       <p style={{ marginTop: 0, color: "#666" }}>
-        Auto-crop MVP — one image in, one cropped image out.
+        Auto-crop MVP — one image in, one cropped image out. Runs entirely in
+        your browser.
       </p>
 
       <div
@@ -80,9 +74,14 @@ export default function Home() {
         </button>
       </div>
 
-      {error && (
-        <p style={{ color: "#c00", fontWeight: 600 }}>Error: {error}</p>
+      {loading && (
+        <p style={{ color: "#666" }}>
+          Processing… the first run downloads the MediaPipe models (a few tens
+          of MB), so it may take a few seconds.
+        </p>
       )}
+
+      {error && <p style={{ color: "#c00", fontWeight: 600 }}>Error: {error}</p>}
 
       {result && !result.detected && (
         <p
@@ -101,15 +100,16 @@ export default function Home() {
       {result && result.detected && (
         <p style={{ color: "#666" }}>
           Detected {result.numPeople}{" "}
-          {result.numPeople === 1 ? "person" : "people"} — cropped to the
-          padded subject box.
+          {result.numPeople === 1 ? "person" : "people"} — cropped to the padded
+          subject box ({result.width}×{result.height}).
         </p>
       )}
 
       {result && (
         <div style={{ marginTop: 16 }}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src={result.imageDataUrl}
+            src={result.url}
             alt="Cropped result"
             style={{
               maxWidth: "100%",
@@ -121,7 +121,7 @@ export default function Home() {
           />
           <div style={{ marginTop: 12 }}>
             <a
-              href={result.imageDataUrl}
+              href={result.url}
               download="cropped.png"
               style={{
                 display: "inline-block",
