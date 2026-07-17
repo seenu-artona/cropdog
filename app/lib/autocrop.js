@@ -33,6 +33,10 @@ const R_EAR = 8;
 const L_SHOULDER = 11;
 const R_SHOULDER = 12;
 
+// Head landmarks used to find the face's horizontal center for centering:
+// nose, both eyes (inner/center), both ears.
+const FACE_LANDMARKS = [0, 2, 5, 7, 8];
+
 // Same models the Python version uses.
 const WASM_BASE =
   "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
@@ -117,6 +121,21 @@ function personBoxFromLandmarks(landmarks, w, h) {
   return [x0, y0Extended, x1, y1];
 }
 
+// Horizontal center of the face from head landmarks, in the given px space.
+// Returns null if no head landmark is visible enough.
+function faceCenterX(landmarks, w) {
+  const xs = [];
+  for (const i of FACE_LANDMARKS) {
+    const lm = landmarks[i];
+    if (!lm) continue;
+    const vis = lm.visibility == null ? 1 : lm.visibility;
+    if (vis < POSE_VISIBILITY_THRESHOLD) continue;
+    xs.push(lm.x * w);
+  }
+  if (!xs.length) return null;
+  return xs.reduce((a, b) => a + b, 0) / xs.length;
+}
+
 function unionBoxes(boxes) {
   return [
     Math.min(...boxes.map((b) => b[0])),
@@ -147,7 +166,14 @@ function clampBox(box, w, h) {
 // is never cut. The target dimension can never exceed the image (bh*R <= imgW
 // and bw/R <= imgH), so the box always fits; if it's already the full image we
 // simply return the whole frame.
-function fitBoxToAspect(box, imgW, imgH) {
+//
+// When adding width, we center the crop horizontally on the face (`faceCx`,
+// full-res px) instead of the box center, so the subject reads as centered.
+// This only ever slides the window within the slack that still keeps the whole
+// subject box in frame and the window inside the image — never cutting the
+// subject, never inventing pixels. Falls back to the box center if faceCx is
+// null. Height is left head-anchored (box-centered), not face-centered.
+function fitBoxToAspect(box, imgW, imgH, faceCx) {
   const [x0, y0, x1, y1] = box;
   const bw = x1 - x0;
   const bh = y1 - y0;
@@ -161,12 +187,16 @@ function fitBoxToAspect(box, imgW, imgH) {
   if (boxRatio < targetRatio) {
     // Too tall/narrow -> add width, keep height.
     const tw = Math.min(imgW, Math.round(bh * targetRatio));
-    const cx = (x0 + x1) / 2;
-    let nx0 = Math.round(cx - tw / 2);
-    nx0 = Math.max(0, Math.min(nx0, imgW - tw));
+    const anchor = faceCx == null ? (x0 + x1) / 2 : faceCx;
+    // Keep the whole subject box in frame: nx0 in [x1 - tw, x0]. Also inside
+    // the image: nx0 in [0, imgW - tw]. (tw >= bw guarantees this is valid.)
+    const lo = Math.max(0, x1 - tw);
+    const hi = Math.min(x0, imgW - tw);
+    let nx0 = Math.round(anchor - tw / 2);
+    nx0 = Math.max(lo, Math.min(nx0, hi));
     return [nx0, y0, nx0 + tw, y1];
   }
-  // Too wide/short -> add height, keep width.
+  // Too wide/short -> add height, keep width (head-anchored: box-centered).
   const th = Math.min(imgH, Math.round(bw / targetRatio));
   const cy = (y0 + y1) / 2;
   let ny0 = Math.round(cy - th / 2);
@@ -305,13 +335,22 @@ export async function autoCrop(file) {
 
   if (!people.length) return makeOriginal();
 
-  // Per-person landmark boxes (detection space).
+  // Per-person landmark boxes (detection space) + face centers for centering.
   const boxes = [];
+  const faceXs = [];
   for (const landmarks of people) {
     const box = personBoxFromLandmarks(landmarks, dw, dh);
-    if (box) boxes.push(box);
+    if (!box) continue;
+    boxes.push(box);
+    const fx = faceCenterX(landmarks, dw);
+    if (fx != null) faceXs.push(fx);
   }
   if (!boxes.length) return makeOriginal();
+
+  // Detection-space horizontal center of all faces (mean), or null if none.
+  const faceCxDetection = faceXs.length
+    ? faceXs.reduce((a, b) => a + b, 0) / faceXs.length
+    : null;
 
   let merged = unionBoxes(boxes);
 
@@ -334,8 +373,10 @@ export async function autoCrop(file) {
   const fullBox = [merged[0] * sx, merged[1] * sy, merged[2] * sx, merged[3] * sy];
   const padded = padBox(fullBox, PADDING_RATIO);
   const base = clampBox(padded, fullW, fullH);
-  // Match the output aspect ratio to the input file's (grows only; never cuts).
-  const [x0, y0, x1, y1] = fitBoxToAspect(base, fullW, fullH);
+  // Match the output aspect ratio to the input file's (grows only; never cuts),
+  // centering horizontally on the face.
+  const faceCxFull = faceCxDetection == null ? null : faceCxDetection * sx;
+  const [x0, y0, x1, y1] = fitBoxToAspect(base, fullW, fullH, faceCxFull);
 
   if (x1 <= x0 || y1 <= y0) return makeOriginal();
 

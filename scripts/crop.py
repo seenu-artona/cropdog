@@ -101,6 +101,23 @@ def ensure_model(url, dest):
 L_EAR, R_EAR = 7, 8
 L_SHOULDER, R_SHOULDER = 11, 12
 
+# Head landmarks used to find the face's horizontal center for centering:
+# nose, both eyes (inner/center), both ears.
+FACE_LANDMARKS = [0, 2, 5, 7, 8]
+
+
+def face_center_x(landmarks, w):
+    """Horizontal center of the face from visible head landmarks (px), or None."""
+    xs = []
+    for i in FACE_LANDMARKS:
+        lm = landmarks[i]
+        if getattr(lm, "visibility", 1.0) < POSE_VISIBILITY_THRESHOLD:
+            continue
+        xs.append(lm.x * w)
+    if not xs:
+        return None
+    return sum(xs) / len(xs)
+
 
 def person_box_from_landmarks(landmarks, w, h):
     """Return [x0, y0, x1, y1] pixel box from visible landmarks, extended
@@ -217,11 +234,16 @@ def clamp_box(box, w, h):
     return [x0, y0, x1, y1]
 
 
-def fit_box_to_aspect(box, w, h):
+def fit_box_to_aspect(box, w, h, face_cx=None):
     """Grow `box` so its aspect ratio matches the input image's, staying inside
     the image. Only ever ADDS background on the short axis -- the subject region
     is never cut. The target dimension can't exceed the image (bh*R <= w and
-    bw/R <= h), so it always fits; a full-image box just returns the frame."""
+    bw/R <= h), so it always fits; a full-image box just returns the frame.
+
+    When adding width, center the crop horizontally on the face (`face_cx`, px)
+    instead of the box center, but only within the slack that still keeps the
+    whole subject box in frame and the window inside the image. Falls back to the
+    box center if face_cx is None. Height stays head-anchored (box-centered)."""
     x0, y0, x1, y1 = box
     bw = x1 - x0
     bh = y1 - y0
@@ -236,12 +258,16 @@ def fit_box_to_aspect(box, w, h):
     if box_ratio < target_ratio:
         # Too tall/narrow -> add width, keep height.
         tw = min(w, int(round(bh * target_ratio)))
-        cx = (x0 + x1) / 2
-        nx0 = int(round(cx - tw / 2))
-        nx0 = max(0, min(nx0, w - tw))
+        anchor = (x0 + x1) / 2 if face_cx is None else face_cx
+        # Keep the whole subject box in frame: nx0 in [x1 - tw, x0]. Also inside
+        # the image: nx0 in [0, w - tw]. (tw >= bw guarantees this is valid.)
+        lo = max(0, x1 - tw)
+        hi = min(x0, w - tw)
+        nx0 = int(round(anchor - tw / 2))
+        nx0 = max(lo, min(nx0, hi))
         return [nx0, y0, nx0 + tw, y1]
 
-    # Too wide/short -> add height, keep width.
+    # Too wide/short -> add height, keep width (head-anchored: box-centered).
     th = min(h, int(round(bw / target_ratio)))
     cy = (y0 + y1) / 2
     ny0 = int(round(cy - th / 2))
@@ -308,18 +334,26 @@ def main():
         sys.stderr.write(f"[crop.py] segmentation skipped: {e}\n")
         person_mask = None
 
-    # --- Per-person landmark boxes (with head extension) ---------------------
+    # --- Per-person landmark boxes (with head extension) + face centers ------
     boxes = []
+    face_xs = []
     for landmarks in people:
         box = person_box_from_landmarks(landmarks, w, h)
-        if box is not None:
-            boxes.append(box)
+        if box is None:
+            continue
+        boxes.append(box)
+        fx = face_center_x(landmarks, w)
+        if fx is not None:
+            face_xs.append(fx)
 
     if not boxes:
         # People detected but no landmark cleared the visibility threshold.
         cv2.imwrite(output_path, image_bgr)
         print(json.dumps({"detected": False, "numPeople": 0, "box": None}))
         return
+
+    # Horizontal center of all faces (mean), or None if none were visible.
+    face_cx = sum(face_xs) / len(face_xs) if face_xs else None
 
     # --- Union -> refine with mask -> pad -> clamp ---------------------------
     merged = union_boxes(boxes)
@@ -333,8 +367,9 @@ def main():
 
     padded = pad_box(merged, PADDING_RATIO)
     base = clamp_box(padded, w, h)
-    # Match the output aspect ratio to the input file's (grows only; never cuts).
-    x0, y0, x1, y1 = fit_box_to_aspect(base, w, h)
+    # Match the output aspect ratio to the input file's (grows only; never cuts),
+    # centering horizontally on the face.
+    x0, y0, x1, y1 = fit_box_to_aspect(base, w, h, face_cx)
 
     if x1 <= x0 or y1 <= y0:
         cv2.imwrite(output_path, image_bgr)
