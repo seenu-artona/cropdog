@@ -19,10 +19,11 @@ Algorithm (see project spec):
   2. If >1 person, take the UNION of all boxes (no "primary" person).
   3. Pad the merged box outward by a fixed percentage on all four sides.
   4. Clamp to the image edges (never invent pixels).
-  5. Crop to that final rectangle. No fixed aspect ratio, no rule-of-thirds,
-     no orientation bias.
-  6. If NO person is detected, write the original image unchanged and report
-     detected=False.
+  5. Grow the box (only ever adding background on the short side -- the subject
+     is never cut) so the output aspect ratio matches the input file's. No
+     rule-of-thirds, no orientation bias.
+  6. Crop to that final rectangle. If NO person is detected, write the original
+     image unchanged and report detected=False.
 """
 
 import json
@@ -216,6 +217,38 @@ def clamp_box(box, w, h):
     return [x0, y0, x1, y1]
 
 
+def fit_box_to_aspect(box, w, h):
+    """Grow `box` so its aspect ratio matches the input image's, staying inside
+    the image. Only ever ADDS background on the short axis -- the subject region
+    is never cut. The target dimension can't exceed the image (bh*R <= w and
+    bw/R <= h), so it always fits; a full-image box just returns the frame."""
+    x0, y0, x1, y1 = box
+    bw = x1 - x0
+    bh = y1 - y0
+    if bw <= 0 or bh <= 0:
+        return box
+
+    target_ratio = w / h  # width / height
+    box_ratio = bw / bh
+    if abs(box_ratio - target_ratio) < 1e-3:
+        return box
+
+    if box_ratio < target_ratio:
+        # Too tall/narrow -> add width, keep height.
+        tw = min(w, int(round(bh * target_ratio)))
+        cx = (x0 + x1) / 2
+        nx0 = int(round(cx - tw / 2))
+        nx0 = max(0, min(nx0, w - tw))
+        return [nx0, y0, nx0 + tw, y1]
+
+    # Too wide/short -> add height, keep width.
+    th = min(h, int(round(bw / target_ratio)))
+    cy = (y0 + y1) / 2
+    ny0 = int(round(cy - th / 2))
+    ny0 = max(0, min(ny0, h - th))
+    return [x0, ny0, x1, ny0 + th]
+
+
 # ----------------------------------------------------------------------------
 # Main.
 # ----------------------------------------------------------------------------
@@ -299,7 +332,9 @@ def main():
             merged = union_boxes([merged, mask_box])
 
     padded = pad_box(merged, PADDING_RATIO)
-    x0, y0, x1, y1 = clamp_box(padded, w, h)
+    base = clamp_box(padded, w, h)
+    # Match the output aspect ratio to the input file's (grows only; never cuts).
+    x0, y0, x1, y1 = fit_box_to_aspect(base, w, h)
 
     if x1 <= x0 or y1 <= y0:
         cv2.imwrite(output_path, image_bgr)

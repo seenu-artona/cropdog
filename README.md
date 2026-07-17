@@ -18,8 +18,9 @@ Upload an image, click **Crop**. In the browser:
    connected mask blob to catch hands / crossed arms / stray hair.
 3. Takes the **union** of all people's boxes (no "primary" person).
 4. Pads the box by a fixed % on all sides, then clamps to the image edges.
-5. Crops to that rectangle — no fixed aspect ratio, no rule-of-thirds, no
-   orientation bias.
+5. Grows the box (only ever adding background on the short side — the subject
+   is never cut) so the **output aspect ratio matches the input file's**, then
+   crops. No rule-of-thirds, no orientation bias.
 6. If no person is detected, returns the original image and says so.
 
 Tunable constants live at the top of

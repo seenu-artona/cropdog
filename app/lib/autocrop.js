@@ -142,6 +142,38 @@ function clampBox(box, w, h) {
   ];
 }
 
+// Grow `box` so its aspect ratio matches the input image's, then keep it inside
+// the image. We only ever ADD background on the short axis — the subject region
+// is never cut. The target dimension can never exceed the image (bh*R <= imgW
+// and bw/R <= imgH), so the box always fits; if it's already the full image we
+// simply return the whole frame.
+function fitBoxToAspect(box, imgW, imgH) {
+  const [x0, y0, x1, y1] = box;
+  const bw = x1 - x0;
+  const bh = y1 - y0;
+  if (bw <= 0 || bh <= 0) return box;
+
+  const targetRatio = imgW / imgH; // width / height
+  const boxRatio = bw / bh;
+  const EPS = 1e-3;
+  if (Math.abs(boxRatio - targetRatio) < EPS) return box;
+
+  if (boxRatio < targetRatio) {
+    // Too tall/narrow -> add width, keep height.
+    const tw = Math.min(imgW, Math.round(bh * targetRatio));
+    const cx = (x0 + x1) / 2;
+    let nx0 = Math.round(cx - tw / 2);
+    nx0 = Math.max(0, Math.min(nx0, imgW - tw));
+    return [nx0, y0, nx0 + tw, y1];
+  }
+  // Too wide/short -> add height, keep width.
+  const th = Math.min(imgH, Math.round(bw / targetRatio));
+  const cy = (y0 + y1) / 2;
+  let ny0 = Math.round(cy - th / 2);
+  ny0 = Math.max(0, Math.min(ny0, imgH - th));
+  return [x0, ny0, x1, ny0 + th];
+}
+
 // 4-connected connected-component labelling over the person mask.
 function labelComponents(mask, w, h) {
   const labels = new Int32Array(w * h); // 0 = unlabeled/background
@@ -301,7 +333,9 @@ export async function autoCrop(file) {
   const sy = fullH / dh;
   const fullBox = [merged[0] * sx, merged[1] * sy, merged[2] * sx, merged[3] * sy];
   const padded = padBox(fullBox, PADDING_RATIO);
-  const [x0, y0, x1, y1] = clampBox(padded, fullW, fullH);
+  const base = clampBox(padded, fullW, fullH);
+  // Match the output aspect ratio to the input file's (grows only; never cuts).
+  const [x0, y0, x1, y1] = fitBoxToAspect(base, fullW, fullH);
 
   if (x1 <= x0 || y1 <= y0) return makeOriginal();
 
