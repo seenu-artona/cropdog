@@ -1,0 +1,5 @@
+# Not needed for the static Next.js build (Python reference + local artifacts)
+.venv
+scripts/models
+__pycache__
+requirements.txt
