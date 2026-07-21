@@ -1,42 +1,98 @@
 "use client";
 
 import { useState } from "react";
-import { autoCrop } from "./lib/autocrop";
+
+const ACCEPTED = ["image/jpeg", "image/png"];
+
+// Return an object URL for the file with EXIF orientation baked into the pixels,
+// so the displayed original is in display-oriented coordinates (not relying on
+// the browser's implicit orientation handling). Falls back to a plain object
+// URL if createImageBitmap can't honor orientation.
+async function toDisplayOrientedURL(file) {
+  try {
+    const bitmap = await createImageBitmap(file, {
+      imageOrientation: "from-image",
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    canvas.getContext("2d").drawImage(bitmap, 0, 0);
+    const blob = await new Promise((res) =>
+      canvas.toBlob((b) => res(b), file.type || "image/png")
+    );
+    return URL.createObjectURL(blob);
+  } catch {
+    return URL.createObjectURL(file);
+  }
+}
 
 export default function Home() {
   const [file, setFile] = useState(null);
+  const [originalUrl, setOriginalUrl] = useState(null);
+  const [processedUrl, setProcessedUrl] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState(null); // { url, detected, numPeople, width, height }
   const [error, setError] = useState(null);
 
-  async function handleCrop() {
+  async function handleFileChange(e) {
+    const f = e.target.files?.[0] || null;
+    setProcessedUrl(null);
+    setError(null);
+    if (!f) {
+      setFile(null);
+      setOriginalUrl(null);
+      return;
+    }
+    if (!ACCEPTED.includes(f.type)) {
+      setFile(null);
+      setOriginalUrl(null);
+      setError("Please choose a JPEG or PNG image.");
+      return;
+    }
+    setFile(f);
+    setOriginalUrl(await toDisplayOrientedURL(f));
+  }
+
+  async function handleProcess() {
     if (!file) return;
     setLoading(true);
     setError(null);
-    setResult(null);
+    setProcessedUrl(null);
     try {
-      const r = await autoCrop(file);
-      const url = URL.createObjectURL(r.blob);
-      setResult({
-        url,
-        detected: r.detected,
-        numPeople: r.numPeople,
-        width: r.width,
-        height: r.height,
-      });
-    } catch (e) {
-      setError(e?.message || String(e));
+      const form = new FormData();
+      form.append("image", file);
+      const res = await fetch("/api/process", { method: "POST", body: form });
+      if (!res.ok) {
+        let msg = `Server error (${res.status})`;
+        try {
+          const j = await res.json();
+          if (j?.error) msg = j.error;
+        } catch {}
+        throw new Error(msg);
+      }
+      const blob = await res.blob();
+      setProcessedUrl(URL.createObjectURL(blob));
+    } catch (err) {
+      setError(err?.message || String(err));
     } finally {
       setLoading(false);
     }
   }
 
+  const imgStyle = {
+    maxWidth: "100%",
+    maxHeight: 480,
+    height: "auto",
+    border: "1px solid #ddd",
+    borderRadius: 6,
+    background: "#fff",
+    imageOrientation: "from-image",
+  };
+
   return (
     <main style={{ maxWidth: 720, margin: "0 auto", padding: "40px 20px" }}>
       <h1 style={{ marginBottom: 4 }}>CropDog</h1>
       <p style={{ marginTop: 0, color: "#666" }}>
-        Auto-crop MVP — one image in, one cropped image out. Runs entirely in
-        your browser.
+        Phase 1 — upload an image, send it to the server, get it back.
       </p>
 
       <div
@@ -50,15 +106,11 @@ export default function Home() {
       >
         <input
           type="file"
-          accept="image/*"
-          onChange={(e) => {
-            setFile(e.target.files?.[0] || null);
-            setResult(null);
-            setError(null);
-          }}
+          accept="image/jpeg,image/png"
+          onChange={handleFileChange}
         />
         <button
-          onClick={handleCrop}
+          onClick={handleProcess}
           disabled={!file || loading}
           style={{
             padding: "8px 20px",
@@ -70,72 +122,26 @@ export default function Home() {
             borderRadius: 6,
           }}
         >
-          {loading ? "Cropping…" : "Crop"}
+          {loading ? "Processing…" : "Process"}
         </button>
       </div>
 
-      {loading && (
-        <p style={{ color: "#666" }}>
-          Processing… the first run downloads the MediaPipe models (a few tens
-          of MB), so it may take a few seconds.
-        </p>
-      )}
-
       {error && <p style={{ color: "#c00", fontWeight: 600 }}>Error: {error}</p>}
 
-      {result && !result.detected && (
-        <p
-          style={{
-            background: "#fff3cd",
-            border: "1px solid #ffe69c",
-            padding: "12px 16px",
-            borderRadius: 6,
-            fontWeight: 600,
-          }}
-        >
-          No subject detected — showing the original image unmodified.
-        </p>
-      )}
-
-      {result && result.detected && (
-        <p style={{ color: "#666" }}>
-          Detected {result.numPeople}{" "}
-          {result.numPeople === 1 ? "person" : "people"} — cropped to the padded
-          subject box ({result.width}×{result.height}).
-        </p>
-      )}
-
-      {result && (
-        <div style={{ marginTop: 16 }}>
+      {originalUrl && (
+        <section style={{ marginTop: 16 }}>
+          <h2 style={{ fontSize: 16, marginBottom: 8 }}>Uploaded image</h2>
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={result.url}
-            alt="Cropped result"
-            style={{
-              maxWidth: "100%",
-              height: "auto",
-              border: "1px solid #ddd",
-              borderRadius: 6,
-              background: "#fff",
-            }}
-          />
-          <div style={{ marginTop: 12 }}>
-            <a
-              href={result.url}
-              download="cropped.png"
-              style={{
-                display: "inline-block",
-                padding: "8px 20px",
-                background: "#111",
-                color: "#fff",
-                borderRadius: 6,
-                textDecoration: "none",
-              }}
-            >
-              Download cropped image
-            </a>
-          </div>
-        </div>
+          <img src={originalUrl} alt="Uploaded" style={imgStyle} />
+        </section>
+      )}
+
+      {processedUrl && (
+        <section style={{ marginTop: 24 }}>
+          <h2 style={{ fontSize: 16, marginBottom: 8 }}>Returned from server</h2>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={processedUrl} alt="Returned from server" style={imgStyle} />
+        </section>
       )}
     </main>
   );
