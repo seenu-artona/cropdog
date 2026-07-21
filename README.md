@@ -1,55 +1,79 @@
-# CropDog — Auto-Crop Validation MVP
+# CropDog
 
-Throwaway MVP to prove the auto-crop algorithm works. One image in, one
-cropped image out. Stateless, no accounts, no storage.
+Auto-crop tool for studio photos. Split into two deployables:
 
-Everything runs **client-side in the browser** via MediaPipe Tasks (WASM), so
-the app is a static Next.js site that deploys to Vercel with **no backend**.
-Images never leave the browser.
+- **`/` (repo root)** — the **Next.js app** (deploys to **Vercel**). Owns the web
+  UI, EXIF normalization, and orchestration. Calls the detection service over HTTP.
+- **`detection-service/`** — the **Python detection service** (deploys to
+  **Render**). Owns `detect.py` and all MediaPipe / computer-vision work. A minimal
+  FastAPI app exposing `POST /detect` and `GET /health`.
 
-## What it does
+```
+Browser ──upload──▶ Next.js /api/detect ──(sharp EXIF)──▶ Render FastAPI /detect ──▶ MediaPipe
+                    (Vercel)                                (detection-service)
+```
 
-Upload an image, click **Crop**. In the browser:
+## Local development
 
-1. Detects every person with **MediaPipe Pose Landmarker**.
-2. Builds each person's bounding box from visible landmarks, extends it upward
-   for hair (fraction of ear→shoulder head-height), and refines the edges with
-   the **Image Segmenter** person mask — attributing each person to their
-   connected mask blob to catch hands / crossed arms / stray hair.
-3. Takes the **union** of all people's boxes (no "primary" person).
-4. Pads the box by a fixed % on all sides, then clamps to the image edges.
-5. Grows the box (only ever adding background on the short side — the subject
-   is never cut) so the **output aspect ratio matches the input file's**, then
-   crops. No rule-of-thirds, no orientation bias.
-6. If no person is detected, returns the original image and says so.
+You need **two processes**: the Next.js app and the detection service.
 
-Tunable constants live at the top of
-[`app/lib/autocrop.js`](app/lib/autocrop.js)
-(`HEAD_EXTENSION_RATIO`, `PADDING_RATIO`, etc.). The models are downloaded from
-the MediaPipe CDN on first crop and cached by the browser.
+**1. Detection service** (Docker):
 
-## Run locally
+```bash
+docker-compose up --build      # serves on http://localhost:8000
+```
 
-Requires Node 18+.
+Or, without Docker, run it directly (needs a Python env with the
+`detection-service/requirements.txt` deps installed):
+
+```bash
+cd detection-service
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+**2. Next.js app**:
 
 ```bash
 npm install
-npm run dev
+npm run dev                    # http://localhost:3000
 ```
 
-Then open http://localhost:3000.
+The app reads `DETECTION_SERVICE_URL` from `.env.local` (defaults to
+`http://localhost:8000`). Open http://localhost:3000, upload a JPEG/PNG, and
+click **Process** to see the detection debug overlay.
 
-## Deploy to Vercel
+> First request after the service is idle may be slow while models load. The
+> models are baked into the Docker image at build time, so cold starts stay fast.
 
-It's a standard Next.js app with no backend, so:
+## Deploy
 
-1. Push to GitHub (already at `github.com/seenu-artona/cropdog`).
-2. In Vercel: **New Project → import the repo → Deploy.** Framework
-   auto-detects as Next.js; no environment variables or settings needed.
+### Detection service → Render
+
+1. Push to GitHub.
+2. On [render.com](https://render.com): **New +** → **Blueprint** → connect the
+   `seenu-artona/cropdog` repo. Render reads [`render.yaml`](render.yaml) and sets
+   up the `cropdog-detection` Docker web service automatically (free plan,
+   health check at `/health`).
+3. Wait for the first build (installs deps + downloads MediaPipe models), then
+   copy the public URL (e.g. `https://cropdog-detection.onrender.com`).
+
+### Next.js app → Vercel
+
+4. In the Vercel project, set env var **`DETECTION_SERVICE_URL`** to the Render URL.
+5. Redeploy.
+
+> Render's free tier sleeps after ~15 min idle; the next request cold-starts in
+> ~30–60s. The Next.js route waits up to 90s and returns a clear "waking up /
+> unavailable" message if the service is down.
 
 ## Layout
 
-- `app/page.jsx` — the single page (upload, Crop, result, download).
-- `app/lib/autocrop.js` — the cropping algorithm (MediaPipe WASM, client-side).
-- `scripts/crop.py` — the original Python reference implementation of the same
-  algorithm (not used by the app; kept for reference / server-side use).
+- `app/page.jsx` — single page: upload, Process, detection debug overlay.
+- `app/api/detect/route.js` — EXIF-normalizes with sharp, POSTs to the detection service.
+- `app/api/process/route.js` — Phase 1 echo endpoint (EXIF normalization).
+- `detection-service/detect.py` — MediaPipe pose + segmentation, bounding boxes.
+- `detection-service/main.py` — FastAPI wrapper (`/detect`, `/health`).
+- `detection-service/Dockerfile` — installs deps, pre-downloads models, runs uvicorn.
+- `render.yaml` — Render Blueprint for the detection service.
+- `docker-compose.yml` — runs the detection service locally on port 8000.
+- `scripts/crop.py` — earlier standalone crop reference (not used by the app).

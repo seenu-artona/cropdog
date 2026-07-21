@@ -1,0 +1,10 @@
+# Render Blueprint — auto-detected when you connect the repo via
+# "New +" -> "Blueprint". Declares the CropDog detection service.
+services:
+  - type: web
+    name: cropdog-detection
+    env: docker
+    rootDir: detection-service
+    plan: free
+    healthCheckPath: /health
+    autoDeploy: true

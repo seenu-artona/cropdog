@@ -13,8 +13,9 @@ next-env.d.ts
 __pycache__/
 *.pyc
 
-# downloaded mediapipe models (fetched on first run)
+# downloaded mediapipe models (fetched on first run / at docker build)
 /scripts/models/
+/detection-service/models/
 
 # misc
 .DS_Store

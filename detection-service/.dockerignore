@@ -1,0 +1,6 @@
+# Models are downloaded fresh at build time (see Dockerfile), not copied in.
+models/
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/

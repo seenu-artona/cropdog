@@ -1,0 +1,11 @@
+# Local dev: run the Python detection service on port 8000.
+#   docker-compose up --build
+# The Next.js app (npm run dev) reaches it via DETECTION_SERVICE_URL
+# (http://localhost:8000, set in .env.local).
+services:
+  detection:
+    build: ./detection-service
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
